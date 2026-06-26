@@ -1,0 +1,12 @@
+Facts CA
+Copyright 2026 Juliano Martinez
+
+This product is a Go port of the Puppet CA (the certificate authority in
+puppetserver, https://github.com/puppetlabs/puppetserver), Copyright Puppet,
+Inc., licensed under the Apache License, Version 2.0. The `facts-ca-server` and
+`facts-ca-cli` binaries it ships reimplement the Puppet CA v1 HTTP API and
+preserve its wire protocol, certificate extension OID arc, and on-disk
+ssldir/cadir layout, so they interoperate with a real puppetserver and Puppet
+agents. This is a clean-room reimplementation of that published protocol and
+file format; no Puppet source code is copied into, or derived from, this
+repository.

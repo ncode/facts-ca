@@ -1,0 +1,127 @@
+---
+name: Go workload tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  CI: true
+
+permissions:
+  contents: read
+
+jobs:
+  linux_container_tests:
+    name: Go test container (${{ matrix.image }})
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - golang:1.26-bookworm
+          - golang:1.26-alpine
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout current PR
+        uses: actions/checkout@v4
+
+      - name: Test and build in container
+        shell: bash
+        run: |
+          docker run --rm \
+            -e CI=true \
+            -e GOFLAGS=-buildvcs=false \
+            -v "$PWD:/workspace" \
+            -w /workspace \
+            ${{ matrix.image }} \
+            sh -c 'go test ./... && go build ./cmd/facts-ca-cli && go build ./cmd/facts-ca-server'
+
+  e2e:
+    name: e2e (local server <-> cli)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout current PR
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # e2e.sh builds both binaries, runs the CA server over TLS, bootstraps a
+      # cert with trusted-fact extensions, exercises the mTLS admin API and
+      # verifies the chain with openssl (preinstalled on ubuntu runners).
+      - name: Run e2e
+        run: ./e2e.sh
+
+  interop:
+    name: interop (real puppetserver)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout current PR
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # interop.sh stands up a real puppet/puppetserver via docker compose and
+      # proves facts-ca-cli is wire-compatible, including extended attributes.
+      # ubuntu-latest is native amd64 so the image runs without emulation.
+      - name: Run interop
+        run: ./interop.sh
+
+      - name: puppetserver logs on failure
+        if: failure()
+        run: docker compose logs --tail=100 puppet || true
+
+  cross_compile:
+    name: Cross compile ${{ matrix.goos }}/${{ matrix.goarch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+          - goos: freebsd
+            goarch: amd64
+          - goos: freebsd
+            goarch: arm64
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout current PR
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build packages
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: go build ./...

@@ -1,0 +1,15 @@
+# Puppet-compatible csr_attributes.yaml.
+# extension_requests are copied into the issued certificate by the CA;
+# custom_attributes live only in the CSR (e.g. challengePassword for
+# policy-based autosign) and are parsed but not embedded by facts-ca-cli.
+#
+#   facts-ca-cli bootstrap --server ca:8140 --csr-attributes examples/csr_attributes.yaml
+extension_requests:
+  pp_role: web
+  pp_uuid: ED803750-E3C7-44F5-BB08-41A04433FE2E
+  pp_department: infra
+  pp_authorization: "true"
+  # Private namespace (1.3.6.1.4.1.34380.1.2.*) by raw OID also works:
+  1.3.6.1.4.1.34380.1.2.1: custom-value
+custom_attributes:
+  1.2.840.113549.1.9.7: my-preshared-secret   # challengePassword

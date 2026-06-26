@@ -1,0 +1,20 @@
+# A real Puppet CA (puppetserver) for interop-testing facts-ca-cli/-server.
+# puppetserver ships amd64 only; on Apple Silicon it runs under emulation.
+services:
+  puppet:
+    # 7.9.2 is the newest pinned tag on Docker Hub (the 8.x line is only
+    # published as :latest/:edge). The CA v1 API + trusted-fact extension
+    # copying are identical across puppet 7/8, so this is a valid interop target.
+    image: puppet/puppetserver:7.9.2
+    platform: linux/amd64
+    hostname: puppet
+    environment:
+      # Certname + SANs so the master's cert validates when we connect to
+      # localhost from the host. AUTOSIGN signs every incoming CSR.
+      CERTNAME: puppet
+      DNS_ALT_NAMES: "puppet,localhost,127.0.0.1,host.docker.internal"
+      AUTOSIGN: "true"
+      CA_ALLOW_SUBJECT_ALT_NAMES: "true"
+      PUPPETSERVER_JAVA_ARGS: "-Xms512m -Xmx1g"
+    ports:
+      - "8140:8140"

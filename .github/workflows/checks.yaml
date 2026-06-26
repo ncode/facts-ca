@@ -1,0 +1,66 @@
+---
+name: Go checks
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  go_checks:
+    runs-on: ubuntu-latest
+    name: gofmt, go vet, and tidy
+    timeout-minutes: 15
+    steps:
+      - name: Checkout current PR
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        shell: bash
+        run: |
+          files="$(gofmt -l $(git ls-files '*.go'))"
+          if [ -n "$files" ]; then
+            printf 'The following Go files need gofmt:\n%s\n' "$files"
+            exit 1
+          fi
+
+      - name: Check module graph
+        shell: bash
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Vet packages
+        run: go vet ./...
+
+      - name: Vulnerability scan
+        run: go tool govulncheck ./...
+
+  race_tests:
+    runs-on: ubuntu-latest
+    name: race detector
+    timeout-minutes: 25
+    steps:
+      - name: Checkout current PR
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run race tests
+        run: go test -race ./...

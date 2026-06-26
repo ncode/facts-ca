@@ -1,0 +1,65 @@
+---
+name: Go tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+env:
+  CI: true
+
+permissions:
+  contents: read
+
+jobs:
+  go_tests:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            os: ubuntu-latest
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+          - name: macOS arm64
+            os: macos-latest
+          - name: macOS x64
+            os: macos-15-intel
+          - name: Windows Server 2022
+            os: windows-2022
+          - name: Windows Server 2025
+            os: windows-2025
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout current PR
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test packages
+        run: go test ./...
+
+      # The CA store and PKI paths are concurrency-sensitive; keep them under
+      # the race detector.
+      - name: Race detector
+        run: go test -race ./...
+
+      - name: Build commands
+        run: |
+          go build ./cmd/facts-ca-cli
+          go build ./cmd/facts-ca-server
+
+      - name: Smoke commands
+        run: |
+          go run ./cmd/facts-ca-cli --version
+          go run ./cmd/facts-ca-server --version
