@@ -39,7 +39,7 @@ jobs:
       # Feeds the README codecov badge. Tolerates a missing CODECOV_TOKEN
       # secret so the job stays green if the integration is ever detached.
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: coverage.out
           token: ${{ secrets.CODECOV_TOKEN }}
