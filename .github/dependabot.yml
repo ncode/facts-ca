@@ -15,3 +15,8 @@ updates:
       interval: daily
       time: "13:00"
     open-pull-requests-limit: 10
+    ignore:
+      # v7's brew enforces tap-trust and breaks the Homebrew bump in CI; hold the
+      # major at v3 (see .github/workflows/release.yaml bump-tap).
+      - dependency-name: "dawidd6/action-homebrew-bump-formula"
+        update-types: ["version-update:semver-major"]
