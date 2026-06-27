@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Changed
+
+- Reworked into a reusable toolkit. The enrollment flow and mTLS transport, and
+  the CA's HTTP handlers and serving, moved out of the two `main()` functions
+  into public packages:
+  - `agent`: `Enroll(ctx, Config) (*Identity, error)` — one-shot but
+    renewal-ready (TLS via `Get(Client)Certificate` callbacks). `Identity` yields
+    inbound and outbound mTLS (`ServerTLSConfig` is strict
+    `RequireAndVerifyClientCert`) plus `HTTPClient`/`Listener`. Trust is explicit
+    (`CACert`/`CAFingerprint` pin or `TrustOnFirstUse`); `Config.Dir` is optional
+    (Puppet `ssldir` on disk, or ephemeral in-memory); the library never prints.
+  - `ca`: `Init`/`Open(Options) (*CA, error)` with `Handler() http.Handler`,
+    `ServerTLSConfig`, `ListenAndServe`, and `Sign`/`Revoke`/`Clean`/`Statuses`.
+  - `pki`: the X.509 primitives, now a public package.
+  - `facts-ca-cli` and `facts-ca-server` are now thin adapters over these
+    packages; their CLI flags/output and the Puppet CA v1 wire behavior are
+    unchanged (`./e2e.sh` and `./interop.sh` pass as before). `capi`, `ppext`,
+    `castore`, `ssldir` and `version` remain `internal/`. API is pre-1.0 (v0.x).
+
 ### Added
 
 - `facts-ca-server`: a Go port of the Puppet CA service that speaks the Puppet

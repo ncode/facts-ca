@@ -21,6 +21,35 @@ Puppet agent — trust-on-first-use of the CA cert, generate key + CSR, submit,
 poll until signed — and stores everything in a Puppet-compatible `ssldir`. The
 server stores state in a puppetserver-style `cadir`.
 
+## Use as a library
+
+facts-ca is also a toolkit: the reusable halves are importable, so another
+service can get a CA-signed mTLS identity, or embed a Puppet-compatible CA, in a
+few lines. The `agent` and `ca` facades and the `pki` X.509 primitives are
+public; the wire plumbing stays `internal/`.
+
+```go
+// Inbound + outbound mTLS for a service, zero Puppet knowledge:
+id, err := agent.Enroll(ctx, agent.Config{
+    Server:        "ca.internal:8140",
+    Certname:      "payments-api.prod",
+    CAFingerprint: pinned, // pin the CA (or TrustOnFirstUse for a lab)
+})
+srv := &http.Server{Addr: ":8443", TLSConfig: id.ServerTLSConfig(), Handler: mux}
+out := id.HTTPClient() // calls to mesh peers are mutually authenticated
+
+// Embed a Puppet-compatible CA beside your own routes:
+c, err := ca.Open(ca.Options{Dir: "/var/lib/myca"})
+mux.Handle("/puppet-ca/v1/", c.Handler())
+```
+
+`agent.Config.Dir` is optional — a Puppet `ssldir` on disk when set, ephemeral
+in-memory when empty. Trust is explicit (pin via `CACert`/`CAFingerprint`, or
+opt into `TrustOnFirstUse`); the library never prints and never trusts a fetched
+CA silently. The TLS configs read the live cert through `Get(Client)Certificate`
+callbacks, so a future renewer can rotate it in place. The API is pre-1.0 (v0.x)
+and may still change.
+
 ## Build
 
 ```

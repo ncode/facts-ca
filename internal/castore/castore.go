@@ -25,8 +25,8 @@ import (
 	"time"
 
 	"github.com/ncode/facts-ca/internal/capi"
-	"github.com/ncode/facts-ca/internal/pki"
 	"github.com/ncode/facts-ca/internal/ppext"
+	"github.com/ncode/facts-ca/pki"
 )
 
 // ValidName reports whether name is a safe, Puppet-style certname (shared with
@@ -490,6 +490,11 @@ func (c *CA) ServerTLSCert(names []string) (tls.Certificate, error) {
 	if len(names) == 0 {
 		return tls.Certificate{}, errors.New("at least one server TLS name is required")
 	}
+	// Serialize the whole load-or-mint sequence so concurrent first-use can't
+	// race two key generations into mismatched server_crt.pem/server_key.pem.
+	// (Cross-process callers remain the documented single-writer limitation.)
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	crtPath, keyPath := c.path("server_crt.pem"), c.path("server_key.pem")
 	if cb, err := os.ReadFile(crtPath); err == nil {
 		if kb, err := os.ReadFile(keyPath); err == nil {
@@ -516,9 +521,7 @@ func (c *CA) ServerTLSCert(names []string) (tls.Certificate, error) {
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	c.mu.Lock()
-	serial, err := c.nextSerialLocked()
-	c.mu.Unlock()
+	serial, err := c.nextSerialLocked() // c.mu already held for the whole method
 	if err != nil {
 		return tls.Certificate{}, err
 	}
