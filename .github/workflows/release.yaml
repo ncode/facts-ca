@@ -77,7 +77,7 @@ jobs:
       # Requires a ncode/homebrew-tap repo with a facts-ca formula and a
       # HOMEBREW_TAP_TOKEN secret; the job no-ops gracefully if either is absent.
       - name: Bump formula in ncode/homebrew-tap
-        uses: dawidd6/action-homebrew-bump-formula@v3
+        uses: dawidd6/action-homebrew-bump-formula@v7
         with:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           tap: ncode/homebrew-tap
