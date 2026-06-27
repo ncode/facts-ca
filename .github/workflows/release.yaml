@@ -75,9 +75,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Requires a ncode/homebrew-tap repo with a facts-ca formula and a
-      # HOMEBREW_TAP_TOKEN secret; the job no-ops gracefully if either is absent.
+      # HOMEBREW_TAP_TOKEN secret. Pinned to v3 (matching ncode/facts): v7's brew
+      # refuses to load a formula from an untrusted third-party tap in CI
+      # (Homebrew::UntrustedTapError). Dependabot is told to hold the major below.
       - name: Bump formula in ncode/homebrew-tap
-        uses: dawidd6/action-homebrew-bump-formula@v7
+        uses: dawidd6/action-homebrew-bump-formula@v3
         with:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           tap: ncode/homebrew-tap
