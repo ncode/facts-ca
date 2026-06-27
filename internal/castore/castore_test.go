@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/ncode/facts-ca/internal/capi"
-	"github.com/ncode/facts-ca/internal/pki"
 	"github.com/ncode/facts-ca/internal/ppext"
+	"github.com/ncode/facts-ca/pki"
 )
 
 func mustPool(t *testing.T, caPEM []byte) *x509.CertPool {

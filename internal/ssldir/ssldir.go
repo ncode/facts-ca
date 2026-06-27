@@ -15,7 +15,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/ncode/facts-ca/internal/pki"
+	"github.com/ncode/facts-ca/pki"
 )
 
 type SSLDir struct {
