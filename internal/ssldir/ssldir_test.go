@@ -3,6 +3,7 @@ package ssldir
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -18,8 +19,11 @@ func TestLoadOrCreateKeyCreatesLayoutAndReusesKey(t *testing.T) {
 	if !fileExists(t, ssl.PrivateKeyPath()) || !fileExists(t, ssl.PublicKeyPath()) {
 		t.Fatalf("expected private and public keys in %s", dir)
 	}
-	if mode := fileMode(t, filepath.Join(dir, "private_keys")); mode != 0o700 {
-		t.Fatalf("private_keys mode = %o, want 700", mode)
+	if runtime.GOOS != "windows" {
+		mode := fileMode(t, filepath.Join(dir, "private_keys"))
+		if mode != 0o700 {
+			t.Fatalf("private_keys mode = %o, want 700", mode)
+		}
 	}
 
 	again, err := ssl.LoadOrCreateKey(2048)

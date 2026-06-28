@@ -399,8 +399,15 @@ func TestNewEnrollerValidationAndHTTPHelpers(t *testing.T) {
 	if e.server != "ca.example.com:8140" {
 		t.Fatalf("server = %q, want default Puppet port", e.server)
 	}
-	if _, err := newEnroller(Config{Server: "ca.example.com", Logger: slog.Default()}); err != nil {
+	oldHostname := osHostname
+	osHostname = func() (string, error) { return "MixedCase-Node.EXAMPLE.Local", nil }
+	t.Cleanup(func() { osHostname = oldHostname })
+	e, err = newEnroller(Config{Server: "ca.example.com", Logger: slog.Default()})
+	if err != nil {
 		t.Fatalf("newEnroller with default certname and logger: %v", err)
+	}
+	if e.certname != "mixedcase-node.example.local" {
+		t.Fatalf("default certname = %q, want lowercase hostname", e.certname)
 	}
 	if _, err := e.verifiedClient([]byte("bad pem"), nil); err == nil {
 		t.Fatal("verifiedClient accepted bad CA PEM")

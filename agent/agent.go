@@ -64,6 +64,8 @@ func (c Config) logger() *slog.Logger {
 	return slog.New(slog.DiscardHandler)
 }
 
+var osHostname = os.Hostname
+
 // Enroll obtains a CA-signed certificate for the configured certname and returns
 // a usable mTLS Identity. With Config.Dir set it reads/writes a Puppet ssldir and
 // reuses an existing identity; with Dir empty it is ephemeral and in-memory.
@@ -456,11 +458,11 @@ func Load(dir, certname string) (*Identity, error) {
 }
 
 func defaultCertname() string {
-	h, err := os.Hostname()
+	h, err := osHostname()
 	if err != nil || h == "" {
 		return "agent"
 	}
-	return h
+	return strings.ToLower(h)
 }
 
 // fingerprintEqual compares two SHA256 fingerprints ignoring case and colons, so
