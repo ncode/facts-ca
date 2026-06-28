@@ -17,7 +17,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
-	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -234,23 +233,31 @@ func CreateCRL(caCrt *x509.Certificate, caKey *rsa.PrivateKey, revoked []Revoked
 func Fingerprints(certDER []byte) map[string]string {
 	s1 := sha1.Sum(certDER)
 	s256 := sha256.Sum256(certDER)
+	sha256FP := colonHex(s256[:])
 	return map[string]string{
 		"SHA1":    colonHex(s1[:]),
-		"SHA256":  colonHex(s256[:]),
-		"default": colonHex(s256[:]),
+		"SHA256":  sha256FP,
+		"default": sha256FP,
 	}
 }
 
 func colonHex(b []byte) string {
-	h := strings.ToUpper(hex.EncodeToString(b))
-	var sb strings.Builder
-	for i := 0; i < len(h); i += 2 {
-		if i > 0 {
-			sb.WriteByte(':')
-		}
-		sb.WriteString(h[i : i+2])
+	const hexUpper = "0123456789ABCDEF"
+	if len(b) == 0 {
+		return ""
 	}
-	return sb.String()
+	out := make([]byte, len(b)*3-1)
+	j := 0
+	for i, v := range b {
+		if i > 0 {
+			out[j] = ':'
+			j++
+		}
+		out[j] = hexUpper[v>>4]
+		out[j+1] = hexUpper[v&0x0f]
+		j += 2
+	}
+	return string(out)
 }
 
 // --- PEM I/O --------------------------------------------------------------

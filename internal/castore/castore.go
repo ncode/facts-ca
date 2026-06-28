@@ -418,19 +418,20 @@ func (c *CA) Status(name string) (capi.CertStatus, error) {
 func (c *CA) Statuses() ([]capi.CertStatus, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	names := map[string]bool{}
+	names := map[string]struct{}{}
 	for _, sub := range []string{"signed", "requests"} {
 		entries, err := os.ReadDir(c.path(sub))
 		if err != nil {
 			return nil, err // don't report a partial list as success
 		}
 		for _, e := range entries {
-			names[strings.TrimSuffix(e.Name(), ".pem")] = true
+			names[strings.TrimSuffix(e.Name(), ".pem")] = struct{}{}
 		}
 	}
+	revoked := c.readRevokedLocked()
 	out := make([]capi.CertStatus, 0, len(names))
 	for n := range names {
-		st, err := c.statusLocked(n)
+		st, err := c.statusWithRevokedLocked(n, revoked)
 		if err != nil {
 			continue
 		}
@@ -441,7 +442,7 @@ func (c *CA) Statuses() ([]capi.CertStatus, error) {
 }
 
 func (c *CA) statusLocked(name string) (capi.CertStatus, error) {
-	st := capi.CertStatus{Name: name, Fingerprints: map[string]string{}, AuthzExtensions: map[string]string{}}
+	st := capi.CertStatus{Name: name}
 	if b, err := os.ReadFile(c.path("signed", name+".pem")); err == nil {
 		crt, err := pki.DecodeCert(b)
 		if err != nil {
@@ -456,6 +457,29 @@ func (c *CA) statusLocked(name string) (capi.CertStatus, error) {
 		fillCertFields(&st, crt)
 		return st, nil
 	}
+	return c.statusRequestLocked(name, st)
+}
+
+func (c *CA) statusWithRevokedLocked(name string, revoked []pki.RevokedEntry) (capi.CertStatus, error) {
+	st := capi.CertStatus{Name: name}
+	if b, err := os.ReadFile(c.path("signed", name+".pem")); err == nil {
+		crt, err := pki.DecodeCert(b)
+		if err != nil {
+			return st, err
+		}
+		st.State = capi.StateSigned
+		for _, r := range revoked {
+			if r.Serial.Cmp(crt.SerialNumber) == 0 {
+				st.State = capi.StateRevoked
+			}
+		}
+		fillCertFields(&st, crt)
+		return st, nil
+	}
+	return c.statusRequestLocked(name, st)
+}
+
+func (c *CA) statusRequestLocked(name string, st capi.CertStatus) (capi.CertStatus, error) {
 	if b, err := os.ReadFile(c.path("requests", name+".pem")); err == nil {
 		csr, err := pki.DecodeCSR(b)
 		if err != nil {
@@ -484,7 +508,7 @@ func fillCertFields(st *capi.CertStatus, crt *x509.Certificate) {
 }
 
 func sans(dns []string, ips []net.IP) []string {
-	out := []string{}
+	out := make([]string, 0, len(dns)+len(ips))
 	for _, d := range dns {
 		out = append(out, "DNS:"+d)
 	}

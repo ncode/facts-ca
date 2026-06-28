@@ -17,7 +17,7 @@ import (
 	"github.com/ncode/facts-ca/pki"
 )
 
-func newTestCA(t *testing.T, o Options) *CA {
+func newTestCA(t testing.TB, o Options) *CA {
 	t.Helper()
 	o.Dir = t.TempDir()
 	if o.CAName == "" {
@@ -30,7 +30,7 @@ func newTestCA(t *testing.T, o Options) *CA {
 	return c
 }
 
-func csrPEM(t *testing.T, name string, sans []string) []byte {
+func csrPEM(t testing.TB, name string, sans []string) []byte {
 	t.Helper()
 	key, err := pki.GenerateKey(2048)
 	if err != nil {
@@ -44,7 +44,7 @@ func csrPEM(t *testing.T, name string, sans []string) []byte {
 }
 
 // submit PUTs a CSR through the handler and returns the response code.
-func submit(t *testing.T, c *CA, name string, csr []byte) int {
+func submit(t testing.TB, c *CA, name string, csr []byte) int {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPut, capi.Base+"/certificate_request/"+name, bytes.NewReader(csr))
 	rr := httptest.NewRecorder()
