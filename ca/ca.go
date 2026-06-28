@@ -29,13 +29,15 @@ import (
 
 // Options configure Init and Open.
 type Options struct {
-	Dir         string        // cadir (durable; required) — puppetserver layout
-	CAName      string        // CA subject name; defaults to the first Hostname, then the host FQDN
-	Hostnames   []string      // FQDN(s) for the server's own TLS leaf; defaults to the host FQDN
-	TTL         time.Duration // issued-cert lifetime; 0 => pki.DefaultCATTL
-	AutosignAll bool          // sign every valid incoming CSR (insecure)
-	AllowAltSAN bool          // honor agent-requested SANs; default false matches puppetserver
-	Logger      *slog.Logger  // optional; nil => no logging (the library never prints)
+	Dir                      string        // cadir (durable; required) — puppetserver layout
+	CAName                   string        // CA subject name; defaults to the first Hostname, then the host FQDN
+	Hostnames                []string      // FQDN(s) for the server's own TLS leaf; defaults to the host FQDN
+	TTL                      time.Duration // issued-cert lifetime; 0 => pki.DefaultCATTL
+	AutosignAll              bool          // sign every valid incoming CSR (insecure)
+	AllowAltSAN              bool          // honor agent-requested SANs; default false matches puppetserver
+	AutosignPolicyExecutable string
+	AutosignPolicyTimeout    time.Duration
+	Logger                   *slog.Logger // optional; nil => no logging (the library never prints)
 }
 
 // CA is a loaded certificate authority. It wraps the on-disk cadir store and
@@ -47,7 +49,7 @@ type CA struct {
 }
 
 func (o Options) storeOpts() castore.Options {
-	return castore.Options{TTL: o.TTL, AutosignAll: o.AutosignAll, AllowAltSAN: o.AllowAltSAN}
+	return castore.Options{TTL: o.TTL, AutosignAll: o.AutosignAll, AllowAltSAN: o.AllowAltSAN, AutosignPolicyExecutable: o.AutosignPolicyExecutable, AutosignPolicyTimeout: o.AutosignPolicyTimeout}
 }
 
 func (o Options) logger() *slog.Logger {

@@ -6,3 +6,6 @@
 *.pem
 /dist/
 coverage.out
+/tools/*-unix-e2e.sh
+/tools/*-plan9-e2e.*
+/tools/*-windows-e2e.*

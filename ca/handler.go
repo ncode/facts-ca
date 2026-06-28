@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -96,13 +97,24 @@ func (c *CA) putCSR(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "request too large", http.StatusBadRequest)
 		return
 	}
-	signed, err := c.store.SubmitCSR(r.PathValue("name"), body)
+	signed, err := c.store.SubmitCSRFromIP(r.PathValue("name"), body, directPeerIP(r))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	c.log.Info("csr submitted", "name", r.PathValue("name"), "autosigned", signed)
 	w.WriteHeader(http.StatusOK)
+}
+
+func directPeerIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	return ""
 }
 
 func (c *CA) getCSR(w http.ResponseWriter, r *http.Request) {

@@ -73,54 +73,79 @@ func adminMain(action string, args []string) {
 }
 
 func serveMain() {
-	var (
-		cadir    = flag.String("cadir", "./cadir", "CA state directory (puppetserver cadir layout)")
-		listen   = flag.String("listen", ":8140", "HTTPS listen address (Puppet uses 8140)")
-		hostname = flag.String("hostname", defaultHostname(), "server FQDN(s), comma-separated, for its TLS cert")
-		caName   = flag.String("ca-name", "", "CA subject name (default: first hostname)")
-		doInit   = flag.Bool("init", false, "initialize the CA in -cadir if absent")
-		autosign = flag.Bool("autosign", false, "auto-sign every incoming CSR (insecure)")
-		ttl      = flag.Duration("ttl", pki.DefaultCATTL, "lifetime of issued certificates")
-		altSAN   = flag.Bool("allow-dns-alt-names", false, "honor subjectAltNames in agent CSRs (puppetserver default: off)")
-	)
-	flag.Parse()
-
-	hostnames := splitComma(*hostname)
-	if len(hostnames) == 0 {
-		fatal("-hostname must contain at least one non-empty hostname")
+	cfg, err := parseServeConfig(os.Args[1:])
+	if err != nil {
+		fatal("%v", err)
 	}
-	opts := ca.Options{
-		Dir:         *cadir,
-		CAName:      *caName,
-		Hostnames:   hostnames,
-		TTL:         *ttl,
-		AutosignAll: *autosign,
-		AllowAltSAN: *altSAN,
-		Logger:      slog.Default(),
-	}
+	opts := cfg.ca
 
 	c, err := ca.Open(opts)
 	if ca.IsNotExist(err) {
-		if !*doInit {
-			fatal("no CA at %s (pass -init to create one): %v", *cadir, err)
+		if !cfg.init {
+			fatal("no CA at %s (pass -init to create one): %v", opts.Dir, err)
 		}
 		c, err = ca.Init(opts)
 		if err != nil {
 			fatal("init CA: %v", err)
 		}
-		name := *caName
+		name := opts.CAName
 		if name == "" {
-			name = hostnames[0]
+			name = opts.Hostnames[0]
 		}
-		slog.Info("initialized CA", "dir", *cadir, "name", name)
+		slog.Info("initialized CA", "dir", opts.Dir, "name", name)
 	} else if err != nil {
 		fatal("open CA: %v", err)
 	}
 
-	slog.Info("facts-ca-server listening", "addr", *listen, "autosign", *autosign)
-	if err := c.ListenAndServe(*listen); err != nil {
+	slog.Info("facts-ca-server listening", "addr", cfg.listen, "autosign", opts.AutosignAll)
+	if err := c.ListenAndServe(cfg.listen); err != nil {
 		fatal("serve: %v", err)
 	}
+}
+
+type serveConfig struct {
+	listen string
+	init   bool
+	ca     ca.Options
+}
+
+func parseServeConfig(args []string) (serveConfig, error) {
+	fs := flag.NewFlagSet("facts-ca-server", flag.ContinueOnError)
+	var (
+		cadir         = fs.String("cadir", "./cadir", "CA state directory (puppetserver cadir layout)")
+		listen        = fs.String("listen", ":8140", "HTTPS listen address (Puppet uses 8140)")
+		hostname      = fs.String("hostname", defaultHostname(), "server FQDN(s), comma-separated, for its TLS cert")
+		caName        = fs.String("ca-name", "", "CA subject name (default: first hostname)")
+		doInit        = fs.Bool("init", false, "initialize the CA in -cadir if absent")
+		autosign      = fs.Bool("autosign", false, "auto-sign every incoming CSR (insecure)")
+		policyExe     = fs.String("autosign-policy-executable", "", "absolute executable path that approves autosigned CSRs")
+		policyTimeout = fs.Duration("autosign-policy-timeout", 0, "autosign policy timeout (default 5s when policy is configured)")
+		ttl           = fs.Duration("ttl", pki.DefaultCATTL, "lifetime of issued certificates")
+		altSAN        = fs.Bool("allow-dns-alt-names", false, "honor subjectAltNames in agent CSRs (puppetserver default: off)")
+	)
+	if err := fs.Parse(args); err != nil {
+		return serveConfig{}, err
+	}
+
+	hostnames := splitComma(*hostname)
+	if len(hostnames) == 0 {
+		return serveConfig{}, fmt.Errorf("-hostname must contain at least one non-empty hostname")
+	}
+	return serveConfig{
+		listen: *listen,
+		init:   *doInit,
+		ca: ca.Options{
+			Dir:                      *cadir,
+			CAName:                   *caName,
+			Hostnames:                hostnames,
+			TTL:                      *ttl,
+			AutosignAll:              *autosign,
+			AllowAltSAN:              *altSAN,
+			AutosignPolicyExecutable: *policyExe,
+			AutosignPolicyTimeout:    *policyTimeout,
+			Logger:                   slog.Default(),
+		},
+	}, nil
 }
 
 func splitComma(s string) []string {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"slices"
 	"testing"
+	"time"
 
 	capkg "github.com/ncode/facts-ca/ca"
 	"github.com/ncode/facts-ca/internal/capi"
@@ -58,6 +59,29 @@ func TestServerSmallUtils(t *testing.T) {
 	}
 	if defaultHostname() == "" {
 		t.Fatal("defaultHostname returned empty string")
+	}
+}
+
+func TestServeConfigPolicyFlags(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := parseServeConfig([]string{
+		"-cadir", t.TempDir(),
+		"-hostname", "ca.example.com",
+		"-autosign",
+		"-autosign-policy-executable", exe,
+		"-autosign-policy-timeout", "2s",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ca.AutosignPolicyExecutable != exe {
+		t.Fatalf("policy executable = %q, want %q", cfg.ca.AutosignPolicyExecutable, exe)
+	}
+	if cfg.ca.AutosignPolicyTimeout != 2*time.Second {
+		t.Fatalf("policy timeout = %s, want 2s", cfg.ca.AutosignPolicyTimeout)
 	}
 }
 
