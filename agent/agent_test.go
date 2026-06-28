@@ -22,7 +22,7 @@ import (
 
 // caServer starts an in-process CA over mTLS on 127.0.0.1 and returns its
 // host:port and CA PEM. allowSAN lets enrolled leaves keep requested SANs.
-func caServer(t *testing.T, autosign, allowSAN bool) (server string, caPEM []byte) {
+func caServer(t testing.TB, autosign, allowSAN bool) (server string, caPEM []byte) {
 	t.Helper()
 	c, err := ca.Init(ca.Options{
 		Dir:         t.TempDir(),
