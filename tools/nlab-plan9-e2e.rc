@@ -1,0 +1,66 @@
+rfork e
+
+if(~ $#server 0)
+	server=/tmp/facts-ca-server
+if(~ $#cli 0)
+	cli=/tmp/facts-ca-cli
+if(~ $#serverproc 0)
+	serverproc=facts-ca-server
+host=`{awk '$1 ~ /^[0-9][0-9]*\./ && $1 !~ /^224\./ && $1 !~ /^255\./ {print $1; exit}' /net/ipselftab}
+if(~ $#host 0)
+	host=localhost
+if(~ $#port 0)
+	port=18140
+uuid=ED803750-E3C7-44F5-BB08-41A04433FE2E
+serveraddr=$host^:^$port
+roleext='pp_role=web'
+uuidext='pp_uuid='^$uuid
+if(~ $#tmp 0)
+	tmp=/tmp/facts-ca-e2e.$pid
+srvpid=()
+
+fn cleanup {
+	if(! ~ $#srvpid 0)
+		slay $serverproc | rc >/dev/null >[2=1]
+	rm -rf $tmp
+}
+
+fn fail {
+	echo FAIL: $*
+	cleanup
+	exit fail
+}
+
+mkdir $tmp || fail mktemp
+
+echo '== start server (autosign) =='
+$server -init -cadir $tmp/cadir -listen :$port -hostname $host -autosign &
+srvpid=$apid
+sleep 3
+
+echo '== bootstrap node1.test (with Puppet trusted-fact extensions) =='
+boot=`{ $cli bootstrap --server $serveraddr --certname node1.test --ssldir $tmp/ssl --onetime --ext $roleext --ext $uuidext }
+if(! ~ $status '')
+	fail bootstrap $boot
+echo $boot
+if(! echo $boot | grep 'ext pp_role = web' >/dev/null)
+	fail pp_role
+if(! echo $boot | grep 'ext pp_uuid = '^$uuid >/dev/null)
+	fail pp_uuid
+
+echo '== mTLS admin: ca list =='
+list=`{ $cli ca list --server $serveraddr --ssldir $tmp/ssl }
+if(! ~ $status '')
+	fail ca-list $list
+if(! echo $list | grep node1.test >/dev/null)
+	fail admin-list
+
+echo '== mTLS data path =='
+mtls=`{ $cli mtls --server $serveraddr --ssldir $tmp/ssl --url https://$serveraddr/puppet-ca/v1/certificate/ca }
+if(! ~ $status '')
+	fail mtls $mtls
+if(! echo $mtls | grep 'HTTP 200' >/dev/null)
+	fail mtls-status
+
+cleanup
+echo 'ALL PLAN9 E2E CHECKS PASSED'

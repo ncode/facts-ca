@@ -106,7 +106,27 @@ jobs:
           - goos: freebsd
             goarch: amd64
           - goos: freebsd
+            goarch: arm
+          - goos: freebsd
             goarch: arm64
+          - goos: openbsd
+            goarch: amd64
+          - goos: openbsd
+            goarch: arm
+          - goos: openbsd
+            goarch: arm64
+          - goos: netbsd
+            goarch: amd64
+          - goos: netbsd
+            goarch: arm
+          - goos: netbsd
+            goarch: arm64
+          - goos: dragonfly
+            goarch: amd64
+          - goos: illumos
+            goarch: amd64
+          - goos: plan9
+            goarch: amd64
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

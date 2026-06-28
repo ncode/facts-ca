@@ -9,10 +9,10 @@ PREFIX ?= /usr/local
 DESTDIR ?=
 DIST_DIR ?= dist
 BINARIES ?= facts-ca-cli facts-ca-server
-DIST_TARGETS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64 freebsd/amd64 freebsd/arm64
+DIST_TARGETS ?= linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64 freebsd/amd64 freebsd/arm freebsd/arm64 openbsd/amd64 openbsd/arm openbsd/arm64 netbsd/amd64 netbsd/arm netbsd/arm64 dragonfly/amd64 illumos/amd64 plan9/amd64
 SHA256 := $(shell command -v sha256sum >/dev/null 2>&1 && echo "sha256sum" || echo "shasum -a 256")
 
-.PHONY: all build test race vet fmt fmt-check tidy vuln cover e2e interop dist install clean
+.PHONY: all build test race vet fmt fmt-check tidy vuln cover e2e nlab-e2e nlab-unix-e2e nlab-plan9-e2e nlab-windows-e2e interop dist install clean
 
 all: fmt-check vet test build
 
@@ -51,6 +51,17 @@ cover:
 # e2e runs the local server<->cli proof; interop runs the real-puppetserver proof.
 e2e:
 	./e2e.sh
+
+nlab-unix-e2e:
+	./tools/nlab-unix-e2e.sh
+
+nlab-plan9-e2e:
+	./tools/nlab-plan9-e2e.sh
+
+nlab-windows-e2e:
+	./tools/nlab-windows-e2e.sh
+
+nlab-e2e: nlab-unix-e2e nlab-plan9-e2e nlab-windows-e2e
 
 interop:
 	./interop.sh
