@@ -34,3 +34,53 @@ design decisions land (see `docs/adr/`).
   flags/filesystem and nothing more; proves the public API is sufficient.
 - **Consumer service** — some other Go service that imports the toolkit to get
   mTLS identity (agent half) or to run a CA (CA half).
+- **Autosign policy executable** — an operator-provided program that receives a
+  normalized CSR description and returns an approve/deny decision. It does not
+  choose TTLs, SAN handling, extensions to copy, or any other signing behavior.
+  A denial leaves the CSR pending for manual review instead of rejecting or
+  deleting it. The policy input is a JSON document on stdin, including decoded
+  Puppet extension requests and raw CSR extension data. The policy output is its
+  exit status: `0` approves, `1` denies, and any other outcome is a policy error.
+  Policy errors are reported to operators and leave the CSR pending; CSR
+  submission still succeeds from the enrolling agent's point of view. Policy
+  autosign is still autosign: the policy only participates when automatic
+  signing is enabled, and narrows what would otherwise be blanket autosigning.
+  Configuring a policy while automatic signing is disabled is invalid. Policy
+  input is the CA's normalized view of the CSR; the raw CSR PEM is not part of
+  the policy contract. Policy input also includes request context needed for
+  approval decisions, including the direct TCP peer IP as the request source IP.
+  Proxy-provided client identity is out of scope until trusted PROXY protocol
+  support is explicitly added. Request context lives under a separate `request`
+  object in the versioned policy input JSON. Subject alternative names are
+  exposed as typed DNS and IP arrays rather than Puppet display strings. The CSR
+  subject is represented by the validated `certname`, not by a full X.509
+  subject object.
+  Puppet extension request keys use known Puppet short names when available and
+  dotted OIDs otherwise. Policy input also includes a normalized list of
+  recognized CSR extensions for policies that need more than Puppet extension
+  requests. Unknown non-critical extensions are omitted; unknown critical
+  extensions make the CSR invalid for policy autosign. Extension values are
+  exposed as decoded JSON values; raw DER extension bytes are not part of the
+  policy contract. Puppet extension request values are strings, while known
+  structured X.509 extensions use typed JSON values. A CSR whose recognized
+  extensions cannot be decoded into the policy input is invalid for policy
+  autosign and is not stored. Policy input normalization happens before the CSR
+  is stored; policy execution happens after the CSR is durably stored and before
+  signing. Re-submitting the same pending CSR re-runs the policy, allowing a
+  later approval after external state changes. Policy execution must not hold the
+  CA store lock; signing still verifies that the same CSR is pending before
+  issuing a certificate. If an approved CSR changes or disappears before signing,
+  the CA does not sign it.
+  Policy stdout is ignored; stderr may be logged for deny/error outcomes and is
+  bounded before logging. Denial/error results are not persisted in CA state;
+  the CSR remains in the existing requested state. The operating system is
+  responsible for policy executable permissions and ownership. The policy
+  process inherits the server environment; stdin JSON remains the policy data
+  contract. The executable is invoked without arguments; operators who need
+  arguments can use a wrapper script. The policy process inherits the server
+  working directory. Configuration names use `AutosignPolicyExecutable` in the
+  library and `-autosign-policy-executable` in the server CLI; policy timeout
+  names are `AutosignPolicyTimeout` and `-autosign-policy-timeout`. The policy
+  executable path must be absolute. Startup validates that a configured policy
+  executable exists and is not a directory; later execution failures are policy
+  errors. Configuring a policy timeout without a policy executable is invalid.

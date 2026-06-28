@@ -8,6 +8,7 @@ package castore
 
 import (
 	"bytes"
+	"context"
 	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
@@ -41,16 +42,49 @@ type CA struct {
 	key *rsa.PrivateKey
 	crt *x509.Certificate
 
-	ttl         time.Duration // issued-cert lifetime (ca_ttl)
-	autosignAll bool          // sign every incoming CSR (insecure; == `autosign = true`)
-	allowAltSAN bool          // honor agent-requested subjectAltNames (Puppet default: false)
+	ttl           time.Duration // issued-cert lifetime (ca_ttl)
+	autosignAll   bool          // sign every incoming CSR (insecure; == `autosign = true`)
+	allowAltSAN   bool          // honor agent-requested subjectAltNames (Puppet default: false)
+	policyExe     string
+	policyTimeout time.Duration
 }
 
 // Options configure Init/Open.
 type Options struct {
-	TTL         time.Duration // issued cert lifetime; 0 => pki.DefaultCATTL
-	AutosignAll bool
-	AllowAltSAN bool // honor SANs in agent CSRs; default false matches puppetserver
+	TTL                      time.Duration // issued cert lifetime; 0 => pki.DefaultCATTL
+	AutosignAll              bool
+	AllowAltSAN              bool // honor SANs in agent CSRs; default false matches puppetserver
+	AutosignPolicyExecutable string
+	AutosignPolicyTimeout    time.Duration
+}
+
+func validateOptions(opts Options) (Options, error) {
+	if opts.AutosignPolicyTimeout < 0 {
+		return Options{}, errors.New("AutosignPolicyTimeout must be positive")
+	}
+	if opts.AutosignPolicyExecutable == "" {
+		if opts.AutosignPolicyTimeout != 0 {
+			return Options{}, errors.New("AutosignPolicyTimeout requires AutosignPolicyExecutable")
+		}
+		return opts, nil
+	}
+	if !opts.AutosignAll {
+		return Options{}, errors.New("AutosignPolicyExecutable requires AutosignAll")
+	}
+	if !filepath.IsAbs(opts.AutosignPolicyExecutable) {
+		return Options{}, errors.New("AutosignPolicyExecutable must be absolute")
+	}
+	st, err := os.Stat(opts.AutosignPolicyExecutable)
+	if err != nil {
+		return Options{}, fmt.Errorf("stat AutosignPolicyExecutable: %w", err)
+	}
+	if st.IsDir() {
+		return Options{}, errors.New("AutosignPolicyExecutable must not be a directory")
+	}
+	if opts.AutosignPolicyTimeout == 0 {
+		opts.AutosignPolicyTimeout = defaultAutosignPolicyTimeout
+	}
+	return opts, nil
 }
 
 func (c *CA) path(parts ...string) string {
@@ -59,6 +93,10 @@ func (c *CA) path(parts ...string) string {
 
 // Init creates a fresh CA in dir (failing if one already exists) and returns it.
 func Init(dir, caName string, bits int, opts Options) (*CA, error) {
+	opts, err := validateOptions(opts)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := os.Stat(filepath.Join(dir, "ca_crt.pem")); err == nil {
 		return nil, fmt.Errorf("CA already initialized at %s", dir)
 	}
@@ -71,7 +109,7 @@ func Init(dir, caName string, bits int, opts Options) (*CA, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &CA{dir: dir, key: key, crt: crt, ttl: opts.TTL, autosignAll: opts.AutosignAll, allowAltSAN: opts.AllowAltSAN}
+	c := &CA{dir: dir, key: key, crt: crt, ttl: opts.TTL, autosignAll: opts.AutosignAll, allowAltSAN: opts.AllowAltSAN, policyExe: opts.AutosignPolicyExecutable, policyTimeout: opts.AutosignPolicyTimeout}
 	if c.ttl <= 0 {
 		c.ttl = pki.DefaultCATTL
 	}
@@ -104,6 +142,10 @@ func Init(dir, caName string, bits int, opts Options) (*CA, error) {
 
 // Open loads an existing CA from dir.
 func Open(dir string, opts Options) (*CA, error) {
+	opts, err := validateOptions(opts)
+	if err != nil {
+		return nil, err
+	}
 	crtPEM, err := os.ReadFile(filepath.Join(dir, "ca_crt.pem"))
 	if err != nil {
 		return nil, fmt.Errorf("read CA cert: %w", err)
@@ -120,7 +162,7 @@ func Open(dir string, opts Options) (*CA, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &CA{dir: dir, key: key, crt: crt, ttl: opts.TTL, autosignAll: opts.AutosignAll, allowAltSAN: opts.AllowAltSAN}
+	c := &CA{dir: dir, key: key, crt: crt, ttl: opts.TTL, autosignAll: opts.AutosignAll, allowAltSAN: opts.AllowAltSAN, policyExe: opts.AutosignPolicyExecutable, policyTimeout: opts.AutosignPolicyTimeout}
 	if c.ttl <= 0 {
 		c.ttl = pki.DefaultCATTL
 	}
@@ -133,7 +175,11 @@ func (c *CA) Key() *rsa.PrivateKey    { return c.key }
 func (c *CA) CertPEM() []byte         { return pki.EncodeCert(c.crt) }
 
 // SetAutosignAll toggles blanket autosigning at runtime.
-func (c *CA) SetAutosignAll(v bool) { c.autosignAll = v }
+func (c *CA) SetAutosignAll(v bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.autosignAll = v
+}
 
 // --- CSR intake -----------------------------------------------------------
 
@@ -143,6 +189,18 @@ var ErrNotFound = errors.New("not found")
 // or a cert/CSR already exists, it errors. When autosign matches, the CSR is
 // signed immediately and true is returned.
 func (c *CA) SubmitCSR(name string, csrPEM []byte) (signed bool, err error) {
+	return c.submitCSR(name, csrPEM, "")
+}
+
+func (c *CA) SubmitCSRFromIP(name string, csrPEM []byte, sourceIP string) (signed bool, err error) {
+	return c.submitCSR(name, csrPEM, sourceIP)
+}
+
+func (c *CA) submitCSR(name string, csrPEM []byte, sourceIP string) (signed bool, err error) {
+	c.mu.Lock()
+	autosignAll, policyExe, policyTimeout := c.autosignAll, c.policyExe, c.policyTimeout
+	c.mu.Unlock()
+
 	if !ValidName(name) {
 		return false, fmt.Errorf("invalid certname %q", name)
 	}
@@ -157,9 +215,17 @@ func (c *CA) SubmitCSR(name string, csrPEM []byte) (signed bool, err error) {
 		return false, fmt.Errorf("CSR CN %q does not match certname %q", csr.Subject.CommonName, name)
 	}
 
+	var input policyInput
+	if autosignAll && policyExe != "" {
+		input, err = buildPolicyInput(name, csr, sourceIP)
+		if err != nil {
+			return false, err
+		}
+	}
+
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if _, err := os.Stat(c.path("signed", name+".pem")); err == nil {
+		c.mu.Unlock()
 		return false, fmt.Errorf("certificate already signed for %q", name)
 	}
 	reqPath := c.path("requests", name+".pem")
@@ -167,21 +233,55 @@ func (c *CA) SubmitCSR(name string, csrPEM []byte) (signed bool, err error) {
 		// A re-submission of the same CSR is idempotent; a different one is
 		// rejected so we never silently replace an operator-reviewed request.
 		if !bytes.Equal(existing, csrPEM) {
+			c.mu.Unlock()
 			return false, fmt.Errorf("a different certificate request already exists for %q", name)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
+		c.mu.Unlock()
 		return false, err
 	}
 	if err := os.WriteFile(reqPath, csrPEM, 0o644); err != nil {
+		c.mu.Unlock()
 		return false, err
 	}
-	if c.autosignAll {
+	if !autosignAll {
+		c.mu.Unlock()
+		return false, nil
+	}
+	if policyExe == "" {
 		if err := c.signLocked(name, pki.SignOpts{TTL: c.ttl, AllowAltSAN: c.allowAltSAN}); err != nil {
+			c.mu.Unlock()
 			return false, err
 		}
+		c.mu.Unlock()
 		return true, nil
 	}
-	return false, nil
+	c.mu.Unlock()
+
+	if result := runAutosignPolicy(context.Background(), policyExe, policyTimeout, input); result.outcome != policyApproved {
+		return false, nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	current, err := os.ReadFile(reqPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	if !bytes.Equal(current, csrPEM) {
+		return false, nil
+	}
+	if _, err := os.Stat(c.path("signed", name+".pem")); err == nil {
+		return false, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	if err := c.signLocked(name, pki.SignOpts{TTL: c.ttl, AllowAltSAN: c.allowAltSAN}); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // GetCSR returns the pending CSR PEM for name.

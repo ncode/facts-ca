@@ -63,6 +63,10 @@ go build ./cmd/facts-ca-cli
 # create the CA and serve (autosign for a lab)
 facts-ca-server -init -cadir ./cadir -hostname ca.example.com -autosign
 
+# policy-gated autosign
+facts-ca-server -init -cadir ./cadir -hostname ca.example.com -autosign \
+    -autosign-policy-executable /usr/local/bin/facts-ca-autosign
+
 # production-style: no autosign, sign requests by hand
 facts-ca-server -init -cadir ./cadir -hostname ca.example.com
 facts-ca-server list                 # show pending/signed
@@ -72,8 +76,10 @@ facts-ca-server clean  agent.fqdn
 ```
 
 Flags: `-listen` (default `:8140`), `-ttl` (issued-cert lifetime, default 5y),
-`-ca-name`, `-autosign`, `-allow-dns-alt-names` (honor SANs in agent CSRs;
-default off, matching puppetserver's `allow-subject-alt-names`).
+`-ca-name`, `-autosign`, `-autosign-policy-executable`,
+`-autosign-policy-timeout` (default 5s when a policy is configured),
+`-allow-dns-alt-names` (honor SANs in agent CSRs; default off, matching
+puppetserver's `allow-subject-alt-names`).
 
 `cadir/` layout: `ca_crt.pem ca_key.pem ca_pub.pem ca_crl.pem serial
 inventory.txt signed/ requests/` — plus `server_crt.pem`/`server_key.pem` for
@@ -162,12 +168,12 @@ validation step and is not exercised here.
   parsed but not embedded — Go's CSR API has no clean path for arbitrary CSR
   attributes. `extension_requests` (the cert-bearing trusted facts) are fully
   supported.
-- Autosign is all-or-nothing (`-autosign`); `autosign.conf` glob lists and
-  policy executables are not implemented. Under blanket `-autosign`, a node can
-  self-assert any trusted-fact extension (including the auth subtree
-  `pp_authorization`/`pp_auth_role`), exactly as puppetserver copies them — so
-  don't base authorization on self-asserted facts unless you gate signing
-  (manual sign or an autosign policy).
+- `autosign.conf` glob lists are not implemented. Under blanket `-autosign`
+  without `-autosign-policy-executable`, a node can self-assert any trusted-fact
+  extension (including the auth subtree `pp_authorization`/`pp_auth_role`),
+  exactly as puppetserver copies them — so don't base authorization on
+  self-asserted facts unless you gate signing (manual sign or an autosign
+  policy).
 - The `serial` file is not locked across processes — run offline `sign` while
   the server is stopped, or rely on the in-process admin API.
 - Admin API authorization is "any CA-signed client cert", not Puppet `auth.conf`
