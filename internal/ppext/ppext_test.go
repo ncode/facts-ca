@@ -82,6 +82,12 @@ func TestBuildAndFilter(t *testing.T) {
 	if auth := AuthExtensions(allowed); auth["pp_authorization"] != "true" || len(auth) != 1 {
 		t.Fatalf("auth extensions = %v", auth)
 	}
+	if _, err := BuildExtensions(map[string]string{
+		"pp_role":                  "web",
+		"1.3.6.1.4.1.34380.1.1.13": "same oid",
+	}); err == nil {
+		t.Fatal("BuildExtensions accepted duplicate OIDs")
+	}
 }
 
 func TestParseCSRAttributes(t *testing.T) {

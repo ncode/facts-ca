@@ -7,7 +7,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 SSL="$ROOT/interop-ssl"
+SSL_LONG="$ROOT/interop-ssl-long"
 UUID="ED803750-E3C7-44F5-BB08-41A04433FE2E"
+LONG_CERTNAME="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.cccccccccccccccccccc.example.test"
 
 echo "== build cli =="
 go build -o "$ROOT/facts-ca-cli" ./cmd/facts-ca-cli
@@ -27,7 +29,7 @@ done
 [ -n "$ready" ] || { echo "FAIL: puppetserver not ready"; docker compose logs --tail=50 puppet; exit 1; }
 
 echo "== bootstrap against REAL puppetserver, requesting trusted-fact extensions =="
-rm -rf "$SSL"
+rm -rf "$SSL" "$SSL_LONG"
 "$ROOT/facts-ca-cli" bootstrap --server localhost:8140 --certname interop-node.test \
   --ssldir "$SSL" --waitforcert 90s \
   --ext pp_role=web --ext "pp_uuid=$UUID" --ext pp_department=infra
@@ -43,6 +45,23 @@ echo "$DUMP" | grep -q "1.3.6.1.4.1.34380.1.1.15" && echo "  ok: pp_department c
 
 echo "== puppetserver's own inventory =="
 docker compose exec -T puppet puppetserver ca list --all 2>/dev/null | grep -i interop-node || true
+
+echo "== bootstrap >128-char FQDN certname against REAL puppetserver =="
+[ "${#LONG_CERTNAME}" -gt 128 ] || { echo "FAIL: long certname is only ${#LONG_CERTNAME} chars"; exit 1; }
+"$ROOT/facts-ca-cli" bootstrap --server localhost:8140 --certname "$LONG_CERTNAME" \
+  --ssldir "$SSL_LONG" --waitforcert 90s --dns-alt-names "$LONG_CERTNAME"
+test -f "$SSL_LONG/certs/$LONG_CERTNAME.pem" || { echo "FAIL: long FQDN cert missing"; exit 1; }
+LONG_SUBJECT=$(openssl x509 -in "$SSL_LONG/certs/$LONG_CERTNAME.pem" -noout -subject -nameopt RFC2253)
+echo "$LONG_SUBJECT" | grep -Fq "CN=$LONG_CERTNAME" \
+  && echo "  ok: long FQDN subject CN issued (${#LONG_CERTNAME} chars)" \
+  || { echo "FAIL: long FQDN CN missing"; echo "$LONG_SUBJECT"; exit 1; }
+LONG_SAN=$(openssl x509 -in "$SSL_LONG/certs/$LONG_CERTNAME.pem" -noout -ext subjectAltName | tr -d '\n ')
+echo "$LONG_SAN" | grep -Fq "DNS:$LONG_CERTNAME" \
+  && echo "  ok: long FQDN SAN copied by puppetserver" \
+  || { echo "FAIL: long FQDN SAN missing"; exit 1; }
+openssl verify -CAfile "$SSL_LONG/certs/ca.pem" "$SSL_LONG/certs/$LONG_CERTNAME.pem" >/dev/null \
+  && echo "  ok: long FQDN certificate chains to puppet CA" \
+  || { echo "FAIL: long FQDN certificate does not chain to puppet CA"; exit 1; }
 
 echo "== mTLS back to puppetserver with the issued cert =="
 MTLS_OUT=$("$ROOT/facts-ca-cli" mtls --server localhost:8140 --ssldir "$SSL" \

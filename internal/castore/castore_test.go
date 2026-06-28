@@ -2,8 +2,14 @@ package castore
 
 import (
 	"crypto/x509"
+	"errors"
+	"net"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ncode/facts-ca/internal/capi"
 	"github.com/ncode/facts-ca/internal/ppext"
@@ -233,6 +239,222 @@ func TestAltSANPolicyAndCSRConflict(t *testing.T) {
 	c2, _ := pki.CreateCSR(key2, "dup", nil, nil)
 	if _, err := ca3.SubmitCSR("dup", c2); err == nil {
 		t.Fatal("a different CSR for an existing pending name should be rejected")
+	}
+}
+
+func TestIssuesCertificateForLongFQDN(t *testing.T) {
+	name := strings.Repeat("a", 50) + "." + strings.Repeat("b", 50) + "." + strings.Repeat("c", 20) + ".example.test"
+	if len(name) <= 128 {
+		t.Fatalf("test FQDN length = %d, want >128", len(name))
+	}
+	ca := mustInit(t, Options{AutosignAll: true, AllowAltSAN: true})
+	key, err := pki.GenerateKey(2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, err := pki.CreateCSR(key, name, []string{name}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := ca.SubmitCSR(name, csr)
+	if err != nil {
+		t.Fatalf("SubmitCSR long FQDN: %v", err)
+	}
+	if !signed {
+		t.Fatal("long FQDN CSR was not autosigned")
+	}
+	crt := mustCert(t, ca, name)
+	if crt.Subject.CommonName != name || !slices.Contains(crt.DNSNames, name) {
+		t.Fatalf("issued cert CN/SAN = %q/%v, want %q", crt.Subject.CommonName, crt.DNSNames, name)
+	}
+}
+
+func TestOpenCleanAndServerTLSCert(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Init(dir, "test-ca", 2048, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	ca, err := Open(dir, Options{TTL: time.Hour})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if ca.Cert() == nil || ca.Key() == nil {
+		t.Fatal("Open did not load CA certificate and key")
+	}
+
+	ca.SetAutosignAll(true)
+	signed, err := ca.SubmitCSR("auto-open", csrFor(t, "auto-open"))
+	if err != nil {
+		t.Fatalf("autosign submit after Open: %v", err)
+	}
+	if !signed {
+		t.Fatal("SetAutosignAll(true) did not autosign the CSR")
+	}
+	statuses, err := ca.Statuses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(statuses) != 1 || statuses[0].Name != "auto-open" || statuses[0].State != capi.StateSigned {
+		t.Fatalf("Statuses after autosign = %+v", statuses)
+	}
+
+	leaf, err := ca.ServerTLSCert([]string{"127.0.0.1", "ca.local"})
+	if err != nil {
+		t.Fatalf("ServerTLSCert: %v", err)
+	}
+	if len(leaf.Certificate) != 2 || leaf.Leaf == nil {
+		t.Fatalf("server TLS chain = %#v", leaf.Certificate)
+	}
+	if !slices.Contains(leaf.Leaf.DNSNames, "ca.local") {
+		t.Fatalf("server DNSNames = %v, want ca.local", leaf.Leaf.DNSNames)
+	}
+	if !slices.ContainsFunc(leaf.Leaf.IPAddresses, func(ip net.IP) bool { return ip.String() == "127.0.0.1" }) {
+		t.Fatalf("server IPAddresses = %v, want 127.0.0.1", leaf.Leaf.IPAddresses)
+	}
+	if _, err := leaf.Leaf.Verify(x509.VerifyOptions{Roots: mustPool(t, ca.CertPEM()), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}); err != nil {
+		t.Fatalf("server leaf does not chain to CA: %v", err)
+	}
+	again, err := ca.ServerTLSCert([]string{"127.0.0.1", "ca.local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Leaf.SerialNumber.Cmp(leaf.Leaf.SerialNumber) != 0 {
+		t.Fatal("ServerTLSCert minted a new cert instead of reusing the persisted one")
+	}
+
+	ca.SetAutosignAll(false)
+	if _, err := ca.SubmitCSR("pending-clean", csrFor(t, "pending-clean")); err != nil {
+		t.Fatalf("submit pending-clean: %v", err)
+	}
+	if err := ca.Clean("pending-clean"); err != nil {
+		t.Fatalf("Clean pending CSR: %v", err)
+	}
+	if _, err := ca.Status("pending-clean"); err != ErrNotFound {
+		t.Fatalf("Status after Clean = %v, want ErrNotFound", err)
+	}
+	if err := ca.Clean("missing"); err != ErrNotFound {
+		t.Fatalf("Clean missing = %v, want ErrNotFound", err)
+	}
+}
+
+func TestStatusesSortAndReportIPSANs(t *testing.T) {
+	ca := mustInit(t, Options{AutosignAll: true, AllowAltSAN: true})
+	key, err := pki.GenerateKey(2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"z-node", "a-node"} {
+		csr, err := pki.CreateCSR(key, name, []string{"127.0.0.1"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ca.SubmitCSR(name, csr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list, err := ca.Statuses()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 2 || list[0].Name != "a-node" || list[1].Name != "z-node" {
+		t.Fatalf("Statuses order = %+v", list)
+	}
+	if !slices.Contains(list[0].DNSAltN, "IP:127.0.0.1") {
+		t.Fatalf("DNSAltN = %v, want IP SAN", list[0].DNSAltN)
+	}
+
+	if err := os.WriteFile(filepath.Join(ca.dir, "ca_crl.pem"), []byte("bad crl"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := ca.Status("a-node"); err != nil || st.State != capi.StateSigned {
+		t.Fatalf("Status with corrupt CRL = %+v, %v", st, err)
+	}
+}
+
+func TestStoreErrorsAndDeleteCSR(t *testing.T) {
+	ca := mustInit(t, Options{})
+	if _, err := ca.GetCert("ca"); err != nil {
+		t.Fatalf("GetCert(ca): %v", err)
+	}
+	for _, fn := range []struct {
+		name string
+		run  func() error
+	}{
+		{"GetCSR invalid", func() error { _, err := ca.GetCSR("../bad"); return err }},
+		{"GetCert invalid", func() error { _, err := ca.GetCert("../bad"); return err }},
+		{"Sign invalid", func() error { return ca.Sign("../bad", pki.SignOpts{}) }},
+		{"Revoke invalid", func() error { return ca.Revoke("../bad") }},
+		{"Status invalid", func() error { _, err := ca.Status("../bad"); return err }},
+		{"Clean invalid", func() error { return ca.Clean("../bad") }},
+		{"DeleteCSR invalid", func() error { return ca.DeleteCSR("../bad") }},
+	} {
+		if err := fn.run(); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s = %v, want ErrNotFound", fn.name, err)
+		}
+	}
+
+	if _, err := ca.SubmitCSR("pending", csrFor(t, "pending")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ca.DeleteCSR("pending"); err != nil {
+		t.Fatalf("DeleteCSR pending: %v", err)
+	}
+	if _, err := ca.GetCSR("pending"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetCSR after delete = %v, want ErrNotFound", err)
+	}
+	if err := ca.DeleteCSR("pending"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteCSR missing = %v, want ErrNotFound", err)
+	}
+
+	if _, err := ca.SubmitCSR("dup-signed", csrFor(t, "dup-signed")); err != nil {
+		t.Fatal(err)
+	}
+	if err := ca.Sign("dup-signed", pki.SignOpts{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ca.SubmitCSR("dup-signed", csrFor(t, "dup-signed")); err == nil || !strings.Contains(err.Error(), "already signed") {
+		t.Fatalf("SubmitCSR for signed cert = %v, want already signed", err)
+	}
+	if err := ca.Revoke("dup-signed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ca.Revoke("dup-signed"); err != nil {
+		t.Fatalf("second Revoke should be idempotent: %v", err)
+	}
+
+	if _, err := ca.ServerTLSCert(nil); err == nil {
+		t.Fatal("ServerTLSCert with no names succeeded")
+	}
+}
+
+func TestOpenAndSerialCorruptionErrors(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := Init(dir, "test-ca", 2048, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(filepath.Join(dir, "missing"), Options{}); err == nil {
+		t.Fatal("Open missing dir succeeded")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ca_crt.pem"), []byte("not pem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(dir, Options{}); err == nil {
+		t.Fatal("Open with corrupt CA cert succeeded")
+	}
+
+	dir = t.TempDir()
+	ca, err := Init(dir, "test-ca", 2048, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ca.SubmitCSR("serial-bad", csrFor(t, "serial-bad")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "serial"), []byte("not-hex\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ca.Sign("serial-bad", pki.SignOpts{}); err == nil || !strings.Contains(err.Error(), "corrupt serial") {
+		t.Fatalf("Sign with corrupt serial = %v, want corrupt serial", err)
 	}
 }
 

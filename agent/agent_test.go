@@ -1,16 +1,23 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"crypto/rsa"
 	"crypto/tls"
+	"crypto/x509"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/ncode/facts-ca/ca"
+	"github.com/ncode/facts-ca/pki"
 )
 
 // caServer starts an in-process CA over mTLS on 127.0.0.1 and returns its
@@ -117,6 +124,44 @@ func TestEnrollPinnedCACert(t *testing.T) {
 	}
 }
 
+func TestEnrollUsesStoredCAPinWithoutTrustOnFirstUse(t *testing.T) {
+	server, caPEM := caServer(t, true, false)
+	dir := t.TempDir()
+	certDir := filepath.Join(dir, "certs")
+	if err := os.MkdirAll(certDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, "ca.pem"), caPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	id, err := Enroll(context.Background(), Config{Server: server, Certname: "stored-ca", Dir: dir, KeyBits: 2048})
+	if err != nil {
+		t.Fatalf("enroll with stored CA pin: %v", err)
+	}
+	if id.Certname() != "stored-ca" {
+		t.Fatalf("certname = %q", id.Certname())
+	}
+}
+
+func TestEnrollRejectsPinnedCACertFingerprintDisagreement(t *testing.T) {
+	server, caPEM := caServer(t, true, false)
+	_, err := Enroll(context.Background(), Config{
+		Server: server, Certname: "pin-disagree", KeyBits: 2048,
+		CACert: caPEM, CAFingerprint: "00:11:22",
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not match CAFingerprint") {
+		t.Fatalf("Enroll pin disagreement error = %v", err)
+	}
+}
+
+func TestEnrollNoWaitReturnsPendingError(t *testing.T) {
+	server, _ := caServer(t, false, false)
+	_, err := Enroll(context.Background(), Config{Server: server, Certname: "pending-nowait", KeyBits: 2048, TrustOnFirstUse: true})
+	if err == nil || !strings.Contains(err.Error(), "not yet signed") {
+		t.Fatalf("Enroll no-wait error = %v, want not yet signed", err)
+	}
+}
+
 func TestEnrollContextCancelWaiting(t *testing.T) {
 	server, _ := caServer(t, false, false) // no autosign => CSR stays pending
 	ctx, cancel := context.WithCancel(context.Background())
@@ -201,6 +246,42 @@ func TestIdentityCertRotation(t *testing.T) {
 	}
 }
 
+func TestIdentityTrustMaterialAndHTTPClient(t *testing.T) {
+	server, _ := caServer(t, true, false)
+	id, err := Enroll(context.Background(), Config{Server: server, Certname: "trustmat", KeyBits: 2048, TrustOnFirstUse: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	caPEM := id.CACertPEM()
+	if len(caPEM) == 0 {
+		t.Fatal("CACertPEM returned empty PEM")
+	}
+	caPEM[0] ^= 0xff
+	if bytes.Equal(caPEM, id.CACertPEM()) {
+		t.Fatal("CACertPEM returned mutable internal storage")
+	}
+	if _, err := id.Certificate().Leaf.Verify(x509.VerifyOptions{Roots: id.CAPool(), KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
+		t.Fatalf("identity CAPool does not verify its leaf: %v", err)
+	}
+
+	client := id.HTTPClient()
+	if client.Timeout != 30*time.Second {
+		t.Fatalf("HTTPClient timeout = %s, want 30s", client.Timeout)
+	}
+	tr, ok := client.Transport.(*http.Transport)
+	if !ok || tr.TLSClientConfig == nil {
+		t.Fatalf("HTTPClient transport = %#v", client.Transport)
+	}
+	cert, err := tr.TLSClientConfig.GetClientCertificate(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cert.Leaf.Subject.CommonName != "trustmat" {
+		t.Fatalf("HTTPClient client cert CN = %q", cert.Leaf.Subject.CommonName)
+	}
+}
+
 func TestEnrollStoredCARespectsPin(t *testing.T) {
 	server, caPEM := caServer(t, true, false)
 	dir := t.TempDir()
@@ -246,5 +327,182 @@ func TestLoadLocalOnly(t *testing.T) {
 		t.Fatalf("certname = %q", id.Certname())
 	}
 }
+
+func TestValidationFailures(t *testing.T) {
+	caKey, caCrt, err := pki.CreateCA("test-ca", 2048, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, certPEM := signedLeaf(t, caKey, caCrt, "node1")
+	otherKey, _ := pki.GenerateKey(2048)
+	_, otherCACrt, err := pki.CreateCA("other-ca", 2048, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherCAPEM := pki.EncodeCert(otherCACrt)
+	caPEM := pki.EncodeCert(caCrt)
+
+	tests := []struct {
+		name    string
+		certPEM []byte
+		caPEM   []byte
+		cert    string
+		key     any
+		want    string
+	}{
+		{"bad cert pem", []byte("nope"), caPEM, "node1", key, "not valid PEM"},
+		{"bad ca pem", certPEM, []byte("nope"), "node1", key, "cannot parse pinned CA"},
+		{"wrong ca", certPEM, otherCAPEM, "node1", key, "does not chain"},
+		{"wrong certname", certPEM, caPEM, "other", key, "does not match requested"},
+		{"wrong key", certPEM, caPEM, "node1", otherKey, "public key does not match"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateIssuedCert(tt.certPEM, tt.caPEM, tt.cert, tt.key.(*rsa.PrivateKey))
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("validateIssuedCert error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+
+	if err := validatePinnedCA([]byte("bad"), Config{CACert: caPEM}); err == nil {
+		t.Fatal("validatePinnedCA accepted corrupt stored CA")
+	}
+	if err := validatePinnedCA(caPEM, Config{CACert: otherCAPEM}); err == nil {
+		t.Fatal("validatePinnedCA accepted mismatched CACert")
+	}
+	if err := validatePinnedCA([]byte("bad"), Config{CAFingerprint: "AA"}); err == nil {
+		t.Fatal("validatePinnedCA accepted corrupt fingerprint CA")
+	}
+}
+
+func TestNewEnrollerValidationAndHTTPHelpers(t *testing.T) {
+	if _, err := Enroll(context.Background(), Config{}); err == nil {
+		t.Fatal("Enroll without server succeeded")
+	}
+	if _, err := Load("", "node1"); err == nil {
+		t.Fatal("Load without dir succeeded")
+	}
+	if _, err := Load(t.TempDir(), "../bad"); err == nil {
+		t.Fatal("Load with invalid certname succeeded")
+	}
+	if _, err := newEnroller(Config{}); err == nil {
+		t.Fatal("newEnroller without server succeeded")
+	}
+	if _, err := newEnroller(Config{Server: "ca", Certname: "../bad"}); err == nil {
+		t.Fatal("newEnroller with invalid certname succeeded")
+	}
+	e, err := newEnroller(Config{Server: "ca.example.com", Certname: "node1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.server != "ca.example.com:8140" {
+		t.Fatalf("server = %q, want default Puppet port", e.server)
+	}
+	if _, err := newEnroller(Config{Server: "ca.example.com", Logger: slog.Default()}); err != nil {
+		t.Fatalf("newEnroller with default certname and logger: %v", err)
+	}
+	if _, err := e.verifiedClient([]byte("bad pem"), nil); err == nil {
+		t.Fatal("verifiedClient accepted bad CA PEM")
+	}
+	caKey, caCrt, err := pki.CreateCA("test-ca", 2048, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafKey, certPEM := signedLeaf(t, caKey, caCrt, "node1")
+	leaf, err := pki.DecodeCert(certPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientCert := &tls.Certificate{Certificate: [][]byte{leaf.Raw}, PrivateKey: leafKey, Leaf: leaf}
+	client, err := e.verifiedClient(pki.EncodeCert(caCrt), clientCert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := client.Transport.(*http.Transport)
+	if len(tr.TLSClientConfig.Certificates) != 1 {
+		t.Fatal("verifiedClient did not attach client certificate")
+	}
+	if _, _, err := httpGET(context.Background(), http.DefaultClient, "://bad-url"); err == nil {
+		t.Fatal("httpGET accepted malformed URL")
+	}
+	if _, _, err := httpPUT(context.Background(), http.DefaultClient, "://bad-url", nil); err == nil {
+		t.Fatal("httpPUT accepted malformed URL")
+	}
+
+	badCA := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("not a cert"))
+	}))
+	t.Cleanup(badCA.Close)
+	e.server = strings.TrimPrefix(badCA.URL, "https://")
+	if _, err := e.tofuFetchCA(context.Background()); err != nil {
+		t.Fatalf("raw tofuFetchCA should return 200 body before caller validation: %v", err)
+	}
+	if _, err := Enroll(context.Background(), Config{Server: e.server, Certname: "bad-ca", KeyBits: 2048, TrustOnFirstUse: true}); err == nil || !strings.Contains(err.Error(), "not a certificate") {
+		t.Fatalf("Enroll bad CA response error = %v", err)
+	}
+
+	nonOK := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no", http.StatusTeapot)
+	}))
+	t.Cleanup(nonOK.Close)
+	host := strings.TrimPrefix(nonOK.URL, "https://")
+	e.server = host
+	if _, err := e.tofuFetchCA(context.Background()); err == nil || !strings.Contains(err.Error(), "418") {
+		t.Fatalf("tofuFetchCA non-OK error = %v, want 418", err)
+	}
+
+	huge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.CopyN(w, zeroReader{}, maxResponseBytes+1)
+	}))
+	t.Cleanup(huge.Close)
+	if _, _, err := httpGET(context.Background(), huge.Client(), huge.URL); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized response error = %v, want exceeds", err)
+	}
+
+	badBodyClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: errReader{}}, nil
+	})}
+	if _, _, err := httpGET(context.Background(), badBodyClient, "https://example.test"); err == nil {
+		t.Fatal("httpGET with unreadable body succeeded")
+	}
+}
+
+func signedLeaf(t *testing.T, caKey *rsa.PrivateKey, caCrt *x509.Certificate, name string) (*rsa.PrivateKey, []byte) {
+	t.Helper()
+	key, err := pki.GenerateKey(2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrPEM, err := pki.CreateCSR(key, name, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csr, err := pki.DecodeCSR(csrPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := pki.SignCSR(csr, caCrt, caKey, pki.SignOpts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key, pki.EncodeCert(leaf)
+}
+
+type zeroReader struct{}
+
+func (zeroReader) Read(p []byte) (int, error) {
+	clear(p)
+	return len(p), nil
+}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
+func (errReader) Close() error             { return nil }
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func fileExists(p string) bool { _, err := os.Stat(p); return err == nil }

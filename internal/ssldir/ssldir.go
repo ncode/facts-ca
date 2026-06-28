@@ -59,6 +59,9 @@ func (s *SSLDir) LoadOrCreateKey(bits int) (*rsa.PrivateKey, error) {
 	if b, err := os.ReadFile(s.PrivateKeyPath()); err == nil {
 		return pki.DecodePrivateKey(b)
 	}
+	if err := s.Ensure(); err != nil {
+		return nil, err
+	}
 	key, err := pki.GenerateKey(bits)
 	if err != nil {
 		return nil, err
